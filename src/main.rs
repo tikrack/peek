@@ -19,32 +19,12 @@ fn main() {
         .version("0.1.0")
         .author("Tikrack <tikrackcode@gmail.com>")
         .about("A modern ls replacement written in Rust")
-        .arg(
-            Arg::new("size")
-                .short('s')
-                .long("size")
-                .help("Show file sizes")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("dir-color")
-                .long("dir-color")
-                .help("Set directory color as hex code (e.g. FF0000 or #FF0000)"),
-        )
-        .arg(
-            Arg::new("all")
-                .short('a')
-                .long("all")
-                .help("Show hidden files")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("long")
-                .short('l')
-                .long("long")
-                .help("Long listing format")
-                .action(clap::ArgAction::SetTrue),
-        )
+        .arg(Arg::new("size").short('s').long("size").help("Show file sizes").action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("all").short('a').long("all").help("Show hidden files").action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("long").short('l').long("long").help("Long listing format").action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("tree").short('t').long("tree").help("Show directory structure as tree").action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("depth").long("depth").value_name("N").help("Maximum depth for tree view").value_parser(clap::value_parser!(usize)))
+        .arg(Arg::new("dir-color").long("dir-color").help("Set directory color as hex code (e.g. FF0000 or #FF0000)"))
         .get_matches();
 
     let config_path = get_config_path().expect("Cannot find home directory");
@@ -55,17 +35,19 @@ fn main() {
         write_config(&config_path, &config).expect("Failed to write config");
     }
 
-    let current_dir = ".";
     let show_size = matches.get_flag("size");
     let show_all = matches.get_flag("all");
     let show_long = matches.get_flag("long");
+    let show_tree = matches.get_flag("tree");
+    let max_depth = matches.get_one::<usize>("depth").copied();
+    let dir_color_rgb = config.dir_color.as_ref().and_then(|hex| parse_hex_color(hex));
 
-    let dir_color_rgb = config
-        .dir_color
-        .as_ref()
-        .and_then(|hex| parse_hex_color(hex));
+    if show_tree {
+        print_tree(Path::new("."), "".to_string(), dir_color_rgb, 0, max_depth, show_all);
+        return;
+    }
 
-    match fs::read_dir(current_dir) {
+    match fs::read_dir(".") {
         Ok(entries) => {
             for entry in entries {
                 if let Ok(entry) = entry {
@@ -119,6 +101,56 @@ fn main() {
     }
 }
 
+fn print_tree(
+    path: &Path,
+    prefix: String,
+    dir_color: Option<Color>,
+    depth: usize,
+    max_depth: Option<usize>,
+    show_all: bool,
+) {
+    if max_depth.map_or(false, |m| depth > m) {
+        return;
+    }
+
+    let entries = match fs::read_dir(path) {
+        Ok(e) => {
+            let mut entries: Vec<_> = e.filter_map(Result::ok).collect();
+            entries.sort_by_key(|e| e.file_name());
+            entries
+        }
+        Err(_) => return,
+    };
+
+    let last = entries.len().saturating_sub(1);
+
+    for (i, entry) in entries.into_iter().enumerate() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !show_all && file_name.starts_with('.') {
+            continue;
+        }
+
+        let is_last = i == last;
+        let p = entry.path();
+        let branch = if is_last { "└── " } else { "├── " };
+        let new_prefix = if is_last { "    " } else { "│   " };
+
+        let line = format_filename(&p, dir_color);
+        println!("{}{}{}", prefix, branch, line);
+
+        if p.is_dir() {
+            print_tree(
+                &p,
+                format!("{}{}", prefix, new_prefix),
+                dir_color,
+                depth + 1,
+                max_depth,
+                show_all,
+            );
+        }
+    }
+}
+
 fn format_permissions(mode: u32) -> String {
     let chars = [
         if mode & 0o400 != 0 { 'r' } else { '-' },
@@ -132,10 +164,7 @@ fn format_permissions(mode: u32) -> String {
         if mode & 0o001 != 0 { 'x' } else { '-' },
     ];
 
-    format!(
-        "{}{}{}{}{}{}{}{}{}",
-        chars[0], chars[1], chars[2], chars[3], chars[4], chars[5], chars[6], chars[7], chars[8]
-    )
+    chars.iter().collect()
 }
 
 fn parse_hex_color(hex: &str) -> Option<Color> {
