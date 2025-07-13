@@ -8,6 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::{DateTime, Local};
+use glob::Pattern;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
@@ -25,6 +26,7 @@ fn main() {
         .arg(Arg::new("tree").short('t').long("tree").help("Show directory structure as tree").action(clap::ArgAction::SetTrue))
         .arg(Arg::new("depth").long("depth").value_name("N").help("Maximum depth for tree view").value_parser(clap::value_parser!(usize)))
         .arg(Arg::new("dir-color").long("dir-color").help("Set directory color as hex code (e.g. FF0000 or #FF0000)"))
+        .arg(Arg::new("pattern").short('p').long("pattern").value_name("PATTERN").help("Filter files by glob pattern (e.g. *.rs)"))
         .get_matches();
 
     let config_path = get_config_path().expect("Cannot find home directory");
@@ -40,10 +42,12 @@ fn main() {
     let show_long = matches.get_flag("long");
     let show_tree = matches.get_flag("tree");
     let max_depth = matches.get_one::<usize>("depth").copied();
+    let pattern = matches.get_one::<String>("pattern").map(|s| s.to_string());
     let dir_color_rgb = config.dir_color.as_ref().and_then(|hex| parse_hex_color(hex));
+    let compiled_pattern = pattern.as_ref().and_then(|p| Pattern::new(p).ok());
 
     if show_tree {
-        print_tree(Path::new("."), "".to_string(), dir_color_rgb, 0, max_depth, show_all);
+        print_tree(Path::new("."), "".to_string(), dir_color_rgb, 0, max_depth, show_all, compiled_pattern.as_ref());
         return;
     }
 
@@ -56,6 +60,12 @@ fn main() {
 
                     if !show_all && file_name.starts_with('.') {
                         continue;
+                    }
+
+                    if let Some(ref pattern) = compiled_pattern {
+                        if !pattern.matches_path(&path) {
+                            continue;
+                        }
                     }
 
                     if show_long {
@@ -108,6 +118,7 @@ fn print_tree(
     depth: usize,
     max_depth: Option<usize>,
     show_all: bool,
+    pattern: Option<&Pattern>,
 ) {
     if max_depth.map_or(false, |m| depth > m) {
         return;
@@ -130,8 +141,26 @@ fn print_tree(
             continue;
         }
 
-        let is_last = i == last;
         let p = entry.path();
+
+        if let Some(pat) = pattern {
+            if !pat.matches_path(&p) {
+                if p.is_dir() {
+                    print_tree(
+                        &p,
+                        format!("{}{}", prefix, if i == last { "    " } else { "│   " }),
+                        dir_color,
+                        depth + 1,
+                        max_depth,
+                        show_all,
+                        pattern,
+                    );
+                }
+                continue;
+            }
+        }
+
+        let is_last = i == last;
         let branch = if is_last { "└── " } else { "├── " };
         let new_prefix = if is_last { "    " } else { "│   " };
 
@@ -146,6 +175,7 @@ fn print_tree(
                 depth + 1,
                 max_depth,
                 show_all,
+                pattern,
             );
         }
     }
@@ -163,7 +193,6 @@ fn format_permissions(mode: u32) -> String {
         if mode & 0o002 != 0 { 'w' } else { '-' },
         if mode & 0o001 != 0 { 'x' } else { '-' },
     ];
-
     chars.iter().collect()
 }
 
@@ -174,7 +203,6 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-
     Some(Color::TrueColor { r, g, b })
 }
 
