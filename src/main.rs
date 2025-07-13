@@ -12,12 +12,13 @@ fn main() {
             Arg::new("size")
                 .short('s')
                 .long("size")
-                .help("Show file sizes"),
+                .help("Show file sizes")
+                .action(clap::ArgAction::SetTrue),
         )
         .get_matches();
 
     let current_dir = ".";
-    let show_size = matches.is_present("size");
+    let show_size = matches.get_flag("size");
 
     match fs::read_dir(current_dir) {
         Ok(entries) => {
